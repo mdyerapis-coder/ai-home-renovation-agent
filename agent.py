@@ -10,6 +10,7 @@ Pattern Reference: https://google.github.io/adk-docs/agents/multi-agents/#coordi
 """
 
 from google.adk.agents import LlmAgent, SequentialAgent
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools import google_search
 from google.adk.tools.agent_tool import AgentTool
 from .tools import (
@@ -17,6 +18,18 @@ from .tools import (
     edit_renovation_rendering,
     list_renovation_renderings,
     list_reference_images,
+)
+
+# apivaultd relay integration (see omarchy-api-vault/docs/integration.md):
+# text-only agents may route through the local OpenAI-compatible relay, which
+# injects provider credentials from the Secret Service vault, resolves the
+# model id against the route catalogue, and records per-request cost. The
+# relay holds the keys, so the placeholder API key satisfies LiteLLM.
+# Vision, image generation, and google_search stay on Gemini directly.
+APIVAULT_RELAY_MODEL = LiteLlm(
+    model="openai/models/gemini-2.5-flash-lite",
+    api_base="http://127.0.0.1:8765/v1",
+    api_key="via-apivaultd",
 )
 
 
@@ -113,7 +126,7 @@ def calculate_timeline(
 
 info_agent = LlmAgent(
     name="InfoAgent",
-    model="gemini-3-flash-preview",
+    model=APIVAULT_RELAY_MODEL,
     description="Handles general renovation questions and provides system information",
     instruction="""
 You are the Info Agent for the AI Home Renovation Planner.
