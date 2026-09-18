@@ -17,7 +17,6 @@ from .tools import (
     generate_renovation_rendering,
     edit_renovation_rendering,
     list_renovation_renderings,
-    list_reference_images,
 )
 
 # apivaultd relay integration (see omarchy-api-vault/docs/integration.md):
@@ -96,13 +95,11 @@ def estimate_renovation_cost(
 
 def calculate_timeline(
     scope: str,
-    room_type: str,
 ) -> str:
-    """Estimate renovation timeline based on scope and room type.
+    """Estimate renovation timeline based on scope.
     
     Args:
         scope: Renovation scope (cosmetic, moderate, full, luxury)
-        room_type: Type of room being renovated
     
     Returns:
         Estimated timeline with phases
@@ -334,7 +331,7 @@ ONLY specify changes to SURFACE FINISHES applied to the existing layout:
 If inspiration photo provided: Match that aesthetic precisely using ONLY surface finish changes
 If no inspiration: Use style_preferences from state
 
-Use calculate_timeline tool with room_type and renovation_scope.
+Use calculate_timeline tool with renovation_scope.
 
 **IMPORTANT: At the end, provide a structured summary:**
 
@@ -462,7 +459,7 @@ Briefly describe (2-3 sentences) key features visible in the rendering and how i
 
 **Note**: The enhanced SLC formula (Subject, Lighting, Camera) creates professional-grade photorealistic renderings.
 """,
-    tools=[generate_renovation_rendering, edit_renovation_rendering, list_renovation_renderings],
+    tools=[generate_renovation_rendering],
 )
 
 
