@@ -8,12 +8,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# Helper Functions for Asset Version Management
-# ============================================================================
 
 def get_next_version_number(tool_context: ToolContext, asset_name: str) -> int:
     """Get the next version number for a given asset name."""
@@ -33,7 +29,6 @@ def update_asset_version(tool_context: ToolContext, asset_name: str, version: in
     tool_context.state["asset_versions"][asset_name] = version
     tool_context.state["asset_filenames"][asset_name] = filename
     
-    # Maintain a list of all versions for this asset
     asset_history_key = f"{asset_name}_history"
     if asset_history_key not in tool_context.state:
         tool_context.state[asset_history_key] = []
@@ -77,10 +72,6 @@ async def load_reference_image(tool_context: ToolContext, filename: str):
         return None
 
 
-# ============================================================================
-# Pydantic Input Models
-# ============================================================================
-
 class GenerateRenovationRenderingInput(BaseModel):
     prompt: str = Field(..., description="A detailed description of the renovated space to generate. Include room type, style, colors, materials, fixtures, lighting, and layout.")
     aspect_ratio: str = Field(default="16:9", description="The desired aspect ratio, e.g., '1:1', '16:9', '9:16'. Default is 16:9 for room photos.")
@@ -96,9 +87,55 @@ class EditRenovationRenderingInput(BaseModel):
     reference_image_filename: str = Field(default=None, description="Optional: filename of a reference image to guide the edit.")
 
 
-# ============================================================================
-# Image Generation Tool
-# ============================================================================
+async def _stream_and_save_rendering(
+    client,
+    contents,
+    tool_context: ToolContext,
+    asset_name: str,
+    artifact_filename: str,
+    version: int,
+    *,
+    success: str,
+    save_error: str,
+    empty: str,
+) -> str:
+    config = types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"])
+    for chunk in client.models.generate_content_stream(
+        model="gemini-3-pro-image-preview",
+        contents=contents,
+        config=config,
+    ):
+        if (
+            chunk.candidates is None
+            or chunk.candidates[0].content is None
+            or chunk.candidates[0].content.parts is None
+        ):
+            continue
+
+        part = chunk.candidates[0].content.parts[0]
+        if part.inline_data and part.inline_data.data:
+            image_part = types.Part(inline_data=part.inline_data)
+            try:
+                # Do NOT rebind `version` from save_artifact: that is ADK's
+                # per-filename artifact revision, not our asset version counter.
+                await tool_context.save_artifact(
+                    filename=artifact_filename,
+                    artifact=image_part,
+                )
+                update_asset_version(tool_context, asset_name, version, artifact_filename)
+                tool_context.state["last_generated_rendering"] = artifact_filename
+                tool_context.state["current_asset_name"] = asset_name
+                logger.info(f"Saved rendering as artifact '{artifact_filename}' (version {version})")
+                return success
+            except Exception as e:
+                logger.error(f"Error saving artifact: {e}")
+                return f"{save_error}: {e}"
+        else:
+            if hasattr(chunk, "text") and chunk.text:
+                logger.info(f"Model response: {chunk.text}")
+
+    return empty
+
 
 async def generate_renovation_rendering(tool_context: ToolContext, inputs: GenerateRenovationRenderingInput) -> str:
     """
@@ -115,11 +152,10 @@ async def generate_renovation_rendering(tool_context: ToolContext, inputs: Gener
     try:
         client = genai.Client()
         
-        # Handle inputs that might come as dict instead of Pydantic model
+        # ADK may pass a dict instead of the Pydantic model.
         if isinstance(inputs, dict):
             inputs = GenerateRenovationRenderingInput(**inputs)
         
-        # Handle reference images (current room photo or inspiration)
         reference_images = []
         
         if inputs.current_room_photo:
@@ -185,7 +221,6 @@ async def generate_renovation_rendering(tool_context: ToolContext, inputs: Gener
         if reference_images:
             base_rewrite_prompt += "\n\n**Reference Image Layout:** The reference image shows the EXACT layout that must be preserved. Match the camera angle, room structure, window/door positions, and furniture/appliance placement EXACTLY. Only change the surface finishes and colors. Analyze the lighting in the reference image and replicate it."
         
-        # Get enhanced prompt
         rewritten_prompt_response = client.models.generate_content(
             model="gemini-3-pro-preview", 
             contents=base_rewrite_prompt
@@ -193,89 +228,40 @@ async def generate_renovation_rendering(tool_context: ToolContext, inputs: Gener
         rewritten_prompt = rewritten_prompt_response.text
         logger.info(f"Enhanced prompt: {rewritten_prompt}")
 
-        model = "gemini-3-pro-image-preview"
-        
-        # Build content parts
         content_parts = [types.Part.from_text(text=rewritten_prompt)]
         content_parts.extend(reference_images)
-
         contents = [
             types.Content(
                 role="user",
                 parts=content_parts,
             ),
         ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_modalities=[
-                "IMAGE",
-                "TEXT",
-            ],
-        )
 
-        # Generate versioned filename
         version = get_next_version_number(tool_context, inputs.asset_name)
         artifact_filename = create_versioned_filename(inputs.asset_name, version)
         logger.info(f"Generating rendering with artifact filename: {artifact_filename} (version {version})")
 
-        # Generate the image
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if (
-                chunk.candidates is None
-                or chunk.candidates[0].content is None
-                or chunk.candidates[0].content.parts is None
-            ):
-                continue
-            
-            if chunk.candidates[0].content.parts[0].inline_data and chunk.candidates[0].content.parts[0].inline_data.data:
-                inline_data = chunk.candidates[0].content.parts[0].inline_data
-                
-                # Create a Part object from the inline data
-                # The inline_data already contains the mime_type from the API response
-                image_part = types.Part(inline_data=inline_data)
-                
-                try:
-                    # Save the image as an artifact. Do NOT rebind `version` from
-                    # the return value: that is ADK's per-filename artifact revision,
-                    # not our asset version counter (already set by get_next_version_number).
-                    await tool_context.save_artifact(
-                        filename=artifact_filename, 
-                        artifact=image_part
-                    )
-                    
-                    # Update version tracking
-                    update_asset_version(tool_context, inputs.asset_name, version, artifact_filename)
-                    
-                    # Store in session state
-                    tool_context.state["last_generated_rendering"] = artifact_filename
-                    tool_context.state["current_asset_name"] = inputs.asset_name
-                    
-                    logger.info(f"Saved rendering as artifact '{artifact_filename}' (version {version})")
-                    
-                    return f"✅ Renovation rendering generated successfully!\n\nThe rendering has been saved and is available in the artifacts panel. Artifact name: {inputs.asset_name} (version {version}).\n\nNote: The image is stored as an artifact and can be accessed through the session artifacts, not as a direct image link."
-                    
-                except Exception as e:
-                    logger.error(f"Error saving artifact: {e}")
-                    return f"Error saving rendering as artifact: {e}"
-            else:
-                # Log any text responses
-                if hasattr(chunk, 'text') and chunk.text:
-                    logger.info(f"Model response: {chunk.text}")
-                
-        return "No rendering was generated. Please try again with a more detailed prompt."
+        return await _stream_and_save_rendering(
+            client,
+            contents,
+            tool_context,
+            inputs.asset_name,
+            artifact_filename,
+            version,
+            success=(
+                f"✅ Renovation rendering generated successfully!\n\n"
+                f"The rendering has been saved and is available in the artifacts panel. "
+                f"Artifact name: {inputs.asset_name} (version {version}).\n\n"
+                f"Note: The image is stored as an artifact and can be accessed through the session artifacts, not as a direct image link."
+            ),
+            save_error="Error saving rendering as artifact",
+            empty="No rendering was generated. Please try again with a more detailed prompt.",
+        )
         
     except Exception as e:
         logger.error(f"Error in generate_renovation_rendering: {e}")
         return f"An error occurred while generating the rendering: {e}"
 
-
-# ============================================================================
-# Image Editing Tool
-# ============================================================================
 
 async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenovationRenderingInput) -> str:
     """
@@ -292,11 +278,10 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
     try:
         client = genai.Client()
         
-        # Handle inputs that might come as dict instead of Pydantic model
+        # ADK may pass a dict instead of the Pydantic model.
         if isinstance(inputs, dict):
             inputs = EditRenovationRenderingInput(**inputs)
         
-        # Get artifact_filename from session state if not provided
         artifact_filename = inputs.artifact_filename
         if not artifact_filename:
             artifact_filename = tool_context.state.get("last_generated_rendering")
@@ -304,15 +289,13 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
                 return "❌ No artifact_filename provided and no previous rendering found in session. Please generate a rendering first using generate_renovation_rendering."
             logger.info(f"Using last generated rendering from session: {artifact_filename}")
         
-        # Validate filename format - check for common hallucination patterns
+        # First version is always v1; models sometimes hallucinate _v0.
         if "_v0." in artifact_filename:
-            # Version 0 doesn't exist - the first version is always v1
             logger.warning(f"Invalid version v0 detected in filename: {artifact_filename}")
             corrected_filename = artifact_filename.replace("_v0.", "_v1.")
             logger.info(f"Attempting corrected filename: {corrected_filename}")
             artifact_filename = corrected_filename
         
-        # Load the existing rendering
         logger.info(f"Loading artifact: {artifact_filename}")
         loaded_image_part = None
         try:
@@ -320,13 +303,11 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
         except Exception as e:
             logger.error(f"Error loading artifact: {e}")
         
-        # If loading failed, try to find the most recent version of this asset
+        # Fallback: known filename for this asset, then last_generated_rendering.
         if not loaded_image_part:
-            # Extract base asset name and try to find any existing version
             base_name = artifact_filename.split('_v')[0] if '_v' in artifact_filename else artifact_filename.replace('.png', '')
             asset_filenames = tool_context.state.get("asset_filenames", {})
             
-            # Check if we have any version of this asset
             if base_name in asset_filenames:
                 fallback_filename = asset_filenames[base_name]
                 logger.info(f"Attempting fallback to known artifact: {fallback_filename}")
@@ -338,7 +319,6 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
                 except Exception as e:
                     logger.error(f"Fallback load also failed: {e}")
             
-            # Last resort: try the last generated rendering
             if not loaded_image_part:
                 last_rendering = tool_context.state.get("last_generated_rendering")
                 if last_rendering and last_rendering != artifact_filename:
@@ -355,16 +335,12 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
             available_renderings = get_asset_versions_info(tool_context)
             return f"❌ Could not find rendering artifact: {inputs.artifact_filename}\n\n{available_renderings}\n\nPlease use one of the available artifact filenames, or generate a new rendering first."
 
-        # Handle reference image if specified
         reference_image_part = None
         if inputs.reference_image_filename:
             reference_image_part = await load_reference_image(tool_context, inputs.reference_image_filename)
             if reference_image_part:
                 logger.info(f"Using reference image for editing: {inputs.reference_image_filename}")
 
-        model = "gemini-3-pro-image-preview"
-
-        # Build content parts
         content_parts = [loaded_image_part, types.Part.from_text(text=inputs.prompt)]
         if reference_image_part:
             content_parts.append(reference_image_part)
@@ -375,15 +351,7 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
                 parts=content_parts,
             ),
         ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_modalities=[
-                "IMAGE",
-                "TEXT",
-            ],
-        )
 
-        # Determine asset name and generate versioned filename
         if inputs.asset_name:
             asset_name = inputs.asset_name
         else:
@@ -391,7 +359,6 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
             if current_asset_name:
                 asset_name = current_asset_name
             else:
-                # Extract from filename
                 base_name = artifact_filename.split('_v')[0] if '_v' in artifact_filename else "renovation_rendering"
                 asset_name = base_name
         
@@ -399,66 +366,28 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
         edited_artifact_filename = create_versioned_filename(asset_name, version)
         logger.info(f"Editing rendering with artifact filename: {edited_artifact_filename} (version {version})")
 
-        # Edit the image
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if (
-                chunk.candidates is None
-                or chunk.candidates[0].content is None
-                or chunk.candidates[0].content.parts is None
-            ):
-                continue
-            
-            if chunk.candidates[0].content.parts[0].inline_data and chunk.candidates[0].content.parts[0].inline_data.data:
-                inline_data = chunk.candidates[0].content.parts[0].inline_data
-                
-                # Create a Part object from the inline data
-                # The inline_data already contains the mime_type from the API response
-                edited_image_part = types.Part(inline_data=inline_data)
-                
-                try:
-                    # Save the edited image as an artifact. Do NOT rebind `version`
-                    # from the return value (ADK's per-filename revision); keep the
-                    # asset version from get_next_version_number above.
-                    await tool_context.save_artifact(
-                        filename=edited_artifact_filename,
-                        artifact=edited_image_part
-                    )
-                    
-                    # Update version tracking
-                    update_asset_version(tool_context, asset_name, version, edited_artifact_filename)
-                    
-                    # Store in session state
-                    tool_context.state["last_generated_rendering"] = edited_artifact_filename
-                    tool_context.state["current_asset_name"] = asset_name
-                    
-                    logger.info(f"Saved edited rendering as artifact '{edited_artifact_filename}' (version {version})")
-                    
-                    return f"✅ Rendering edited successfully!\n\nThe updated rendering has been saved and is available in the artifacts panel. Artifact name: {asset_name} (version {version}).\n\nNote: The image is stored as an artifact and can be accessed through the session artifacts, not as a direct image link."
-                    
-                except Exception as e:
-                    logger.error(f"Error saving edited artifact: {e}")
-                    return f"Error saving edited rendering as artifact: {e}"
-            else:
-                # Log any text responses
-                if hasattr(chunk, 'text') and chunk.text:
-                    logger.info(f"Model response: {chunk.text}")
-                
-        return "No edited rendering was generated. Please try again."
+        return await _stream_and_save_rendering(
+            client,
+            contents,
+            tool_context,
+            asset_name,
+            edited_artifact_filename,
+            version,
+            success=(
+                f"✅ Rendering edited successfully!\n\n"
+                f"The updated rendering has been saved and is available in the artifacts panel. "
+                f"Artifact name: {asset_name} (version {version}).\n\n"
+                f"Note: The image is stored as an artifact and can be accessed through the session artifacts, not as a direct image link."
+            ),
+            save_error="Error saving edited rendering as artifact",
+            empty="No edited rendering was generated. Please try again.",
+        )
         
     except Exception as e:
         logger.error(f"Error in edit_renovation_rendering: {e}")
         return f"An error occurred while editing the rendering: {e}"
 
 
-# ============================================================================
-# Utility Tools
-# ============================================================================
-
 async def list_renovation_renderings(tool_context: ToolContext) -> str:
     """Lists all renovation renderings created in this session."""
     return get_asset_versions_info(tool_context)
-

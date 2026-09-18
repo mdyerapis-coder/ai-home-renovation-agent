@@ -18,14 +18,7 @@ from .tools import (
     list_renovation_renderings,
 )
 
-
-# ============================================================================
-# Helper Tool Agent (wraps google_search)
-# ============================================================================
-
-# google_search is a pre-built tool function that allows the agent to perform Google searches
-# Note: google_search can only be used by itself within an agent instance (single tool limitation)
-
+# google_search can only be used by itself on an LlmAgent (single-tool limitation).
 search_agent = LlmAgent(
     name="SearchAgent",
     model="gemini-3-flash-preview",  # google_search requires Gemini 2.0+ models
@@ -36,10 +29,6 @@ Simply respond with the information you find. Be concise and cite sources when a
     tools=[google_search],
 )
 
-
-# ============================================================================
-# Utility Tools
-# ============================================================================
 
 def estimate_renovation_cost(
     room_type: str,
@@ -56,7 +45,6 @@ def estimate_renovation_cost(
     Returns:
         Estimated cost range
     """
-    # Cost per sq ft estimates (2024 ranges)
     rates = {
         "kitchen": {"cosmetic": (50, 100), "moderate": (150, 250), "full": (300, 500), "luxury": (600, 1200)},
         "bathroom": {"cosmetic": (75, 125), "moderate": (200, 350), "full": (400, 600), "luxury": (800, 1500)},
@@ -104,10 +92,6 @@ def calculate_timeline(
     return f"⏱️ Estimated Timeline: {timeline}"
 
 
-# ============================================================================
-# Specialist Agent 1: Info Agent (for general inquiries)
-# ============================================================================
-
 info_agent = LlmAgent(
     name="InfoAgent",
     model="gemini-3-flash-preview",
@@ -130,10 +114,6 @@ Be enthusiastic about home improvement and helpful!
 """,
 )
 
-
-# ============================================================================
-# Specialist Agent 2: Rendering Editor (for iterative refinements)
-# ============================================================================
 
 rendering_editor = LlmAgent(
     name="RenderingEditor",
@@ -176,13 +156,9 @@ After editing, briefly confirm the change.
 )
 
 
-# ============================================================================
-# Specialist: Renovation Planner (assess + design + render)
-# ============================================================================
 # Flattened from a 3-hop SequentialAgent. That pipeline never set output_key and
 # never templated {key} state, so DesignPlanner/ProjectCoordinator were hoping
 # transcript survived. One LlmAgent keeps image context and tools in a single turn.
-
 renovation_planner = LlmAgent(
     name="RenovationPlanner",
     model="gemini-3-flash-preview",
@@ -240,10 +216,6 @@ Do NOT output markdown image syntax like `![image](filename.png)`. Mention that 
     ],
 )
 
-
-# ============================================================================
-# Coordinator/Dispatcher (Root Agent)
-# ============================================================================
 
 root_agent = LlmAgent(
     name="HomeRenovationPlanner",
