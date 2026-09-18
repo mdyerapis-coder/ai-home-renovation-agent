@@ -33,8 +33,8 @@ The system uses a **Coordinator/Dispatcher pattern**:
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/Shubhamsaboo/awesome-llm-apps.git
-   cd awesome-llm-apps/advanced_ai_agents/multi_agent_apps/ai_home_renovation_agent
+   git clone https://github.com/mdyerapis-coder/ai-home-renovation-agent.git ai_home_renovation_agent
+   cd ai_home_renovation_agent
    ```
 
 2. **Install dependencies**
@@ -51,13 +51,12 @@ The system uses a **Coordinator/Dispatcher pattern**:
    GOOGLE_API_KEY=your_gemini_api_key
    ```
 
-4. **Launch ADK Web** 
+4. **Launch ADK Web** (from this repo root)
    ```bash
-   cd multi_agent_apps
    adk web
    ```
 
-5. **Open browser** and select "ai_home_renovation_agent"
+5. **Open** http://localhost:8000 and select `ai_home_renovation_agent`
 
 ## Usage Examples
 
@@ -99,12 +98,15 @@ Want modern farmhouse style with white shaker cabinets. Budget: $30k"
 
 ## Tools & Capabilities
 
-- **google_search**: Finds renovation costs, materials, and trends
-- **estimate_renovation_cost**: Calculates costs by room type and scope
-- **calculate_timeline**: Estimates project duration
-- **generate_renovation_rendering**: Creates photorealistic renderings
-- **edit_renovation_rendering**: Refines renderings based on feedback
-- **Versioned artifacts**: Automatic version tracking for all renderings
+**RenovationPlanner** (assess + design + render)
+- **SearchAgent**: Google search for costs, materials, and trends
+- **estimate_renovation_cost**: Cost by room type and scope
+- **calculate_timeline**: Duration by scope
+- **generate_renovation_rendering**: Photorealistic rendering
+
+**RenderingEditor**
+- **edit_renovation_rendering**: Refine a rendering from feedback
+- **list_renovation_renderings**: List versioned renderings in the session
 
 ## Multi-Agent Pattern
 
