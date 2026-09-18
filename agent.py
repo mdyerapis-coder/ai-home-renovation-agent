@@ -1,15 +1,15 @@
 """AI Home Renovation Planner - Coordinator/Dispatcher Pattern with Multimodal Vision
 
-This demonstrates ADK's Coordinator/Dispatcher Pattern with Gemini 3 Flash's multimodal
-capabilities where a routing agent analyzes requests and delegates to specialists:
+A routing agent analyzes requests and delegates to specialists:
 
-- General questions → Quick info agent
-- Renovation planning → Full planning pipeline (Sequential Agent with 3 vision-enabled specialists)
+- General questions → Info agent
+- Renovation planning → Single planner (assess + design + render)
+- Rendering edits → Rendering editor
 
 Pattern Reference: https://google.github.io/adk-docs/agents/multi-agents/#coordinator-dispatcher-pattern
 """
 
-from google.adk.agents import LlmAgent, SequentialAgent
+from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools import google_search
 from google.adk.tools.agent_tool import AgentTool
@@ -190,287 +190,66 @@ After editing, briefly confirm the change.
 
 
 # ============================================================================
-# Specialist Agents 3-5: Full Planning Pipeline (SequentialAgent)
+# Specialist: Renovation Planner (assess + design + render)
 # ============================================================================
+# Flattened from a 3-hop SequentialAgent. That pipeline never set output_key and
+# never templated {key} state, so DesignPlanner/ProjectCoordinator were hoping
+# transcript survived. One LlmAgent keeps image context and tools in a single turn.
 
-visual_assessor = LlmAgent(
-    name="VisualAssessor",
+renovation_planner = LlmAgent(
+    name="RenovationPlanner",
     model="gemini-3-flash-preview",
-    description="Analyzes room photos and inspiration images using visual AI",
+    description="Analyzes room photos, produces a renovation plan (design, budget, timeline), and generates a photorealistic rendering",
     instruction="""
-You are a visual AI specialist. Analyze ANY uploaded images and detect their type automatically.
+You are the renovation planner. Analyze the request (and any uploaded photos), produce a concrete plan, then generate a rendering.
 
-**IMPORTANT NOTE**: You can SEE and ANALYZE uploaded images, but currently the image editing feature
-has limitations in ADK Web. Focus on providing detailed analysis and design recommendations.
+## 1. Assess the space
+Detect whether each image is a CURRENT ROOM or an INSPIRATION/STYLE reference.
+- Current room: type, size if visible, condition, existing style, problems, opportunities.
+- Document EXACT layout to preserve: windows, doors, cabinet configuration, appliance positions, sink, counters, special features, camera angle.
+- Inspiration: style name, palette, materials, notable features.
+- If both: compare and list surface-finish changes needed to match the inspiration.
+- If only current room: suggest 2-3 style directions.
+- If a budget is mentioned, call estimate_renovation_cost with room type, scope, and square footage (estimate from the photo or description).
+- Use SearchAgent for current material/labor costs when needed.
 
-AUTOMATICALLY DETECT:
-1. If image shows a CURRENT ROOM (existing space that needs renovation)
-2. If image shows INSPIRATION/STYLE reference (desired aesthetic)
-3. Extract budget constraints from user's message if mentioned
+## 2. Design (surface finishes ONLY)
+KEEP THE EXACT LAYOUT. Do not move appliances, reconfigure cabinets, add/remove windows or doors, change footprint, or add/remove islands.
+Specify only surface finishes on the existing layout:
+- Cabinet color (paint name + code on existing cabinets)
+- Wall color
+- Countertops (material/color on existing counters)
+- Flooring (same floor area)
+- Backsplash (same wall areas)
+- Hardware
+- Lighting (replace in place; under-cabinet OK)
+- Appliances: keep or replace like-for-like in the SAME locations
 
-## For CURRENT ROOM images:
-**Current Space Analysis:**
-- Room type: [kitchen/bathroom/bedroom/etc.]
-- Size estimate: [dimensions if visible]
-- Current condition: [issues, outdated elements, damage]
-- Existing style: [current aesthetic]
-- Key problems: [what needs fixing]
-- Improvement opportunities: [quick wins, major changes]
+If a budget exists, separate must-haves vs nice-to-haves.
+Call calculate_timeline with scope (cosmetic/moderate/full/luxury). Prefer cosmetic or moderate — no structural changes.
 
-**CRITICAL - DOCUMENT EXACT LAYOUT (for preservation in rendering):**
-- Window positions: [e.g., "large window on left wall above sink", "skylight in center"]
-- Door positions: [e.g., "doorway on right side"]
-- Cabinet layout: [e.g., "L-shaped upper and lower cabinets along back and left walls"]
-- Appliance positions: [e.g., "stove centered on back wall", "refrigerator on right"]
-- Sink location: [e.g., "under window on left wall"]
-- Counter layout: [e.g., "continuous counter along back and left walls"]
-- Special features: [e.g., "skylight", "breakfast bar", "island"]
-- Camera angle in photo: [e.g., "shot from doorway looking into kitchen"]
+## 3. Deliver a scannable plan
+**Budget Breakdown**: materials, labor, permits/fees, 10% contingency, total. If a budget was given, say whether it fits or suggest phasing.
+**Timeline**: phases
+**Contractors**: trades needed
+**Design Summary**: tight bullets of the finish specs (product names and color codes)
+**Action Checklist**: numbered next steps
 
-## For INSPIRATION images:
-**Inspiration Style:**
-- Style name: [modern farmhouse/minimalist/industrial/etc.]
-- Color palette: [specific colors]
-- Key materials: [wood/stone/metal types]
-- Notable features: [lighting/storage/layout elements]
-- Design elements: [hardware/finishes/patterns]
-
-## Analysis Output:
-
-If BOTH current room + inspiration provided:
-- Compare current vs. inspiration
-- Identify specific changes needed to achieve the inspiration look
-- Note what can stay vs. what needs replacement
-
-If ONLY current room provided:
-- Suggest 2-3 style directions that would work well
-- Focus on functional improvements + aesthetic upgrades
-
-If budget mentioned:
-- Use estimate_renovation_cost tool with detected room type and appropriate scope
-- Assess what's achievable within budget
-
-**IMPORTANT: At the end of your analysis, output a structured summary:**
-
-```
-ASSESSMENT COMPLETE
-
-Images Provided:
-- Current room photo: [Yes/No - describe what you see if yes]
-- Inspiration photo: [Yes/No - describe style if yes]
-
-Room Details:
-- Type: [kitchen/bathroom/bedroom/etc.]
-- Current Analysis: [detailed analysis from photo if provided, or from description]
-- Desired Style: [from inspiration photo or user description]
-- Key Issues: [problems to address]
-- Improvement Opportunities: [suggested improvements]
-- Budget Constraint: $[amount if mentioned, or "Not specified"]
-
-**EXACT LAYOUT TO PRESERVE (critical for rendering):**
-- Windows: [exact positions and sizes]
-- Doors: [exact positions]
-- Cabinets: [configuration and placement - upper/lower, which walls]
-- Appliances: [stove, fridge, dishwasher positions]
-- Sink: [location]
-- Counter layout: [shape and coverage]
-- Special features: [skylights, islands, breakfast bars, etc.]
-- Camera angle: [perspective of the original photo]
-```
-
-Be EXTREMELY DETAILED about the layout - the rendering must match this layout EXACTLY while only changing surface finishes.
-""",
-    tools=[AgentTool(search_agent), estimate_renovation_cost],
-)
-
-
-design_planner = LlmAgent(
-    name="DesignPlanner",
-    model="gemini-3-flash-preview",
-    description="Creates detailed renovation design plan",
-    instruction="""
-Read from state: room_analysis, style_preferences, room_type, key_issues, opportunities, budget_constraint
-
-Create SPECIFIC, ACTIONABLE design plan tailored to their situation.
-
-**CRITICAL RULE - PRESERVE EXACT LAYOUT:**
-The design plan must KEEP THE EXACT SAME LAYOUT as the current room. DO NOT suggest:
-- Moving appliances to different locations
-- Reconfiguring cabinet positions
-- Adding or removing windows/doors
-- Changing the room's footprint or structure
-- Adding islands or removing existing features
-
-ONLY specify changes to SURFACE FINISHES applied to the existing layout:
-- Paint colors for existing walls and cabinets
-- New countertop material on existing counters
-- New flooring in the same floor area
-- New backsplash on existing walls
-- New hardware on existing cabinets
-- Lighting upgrades (can add under-cabinet lights, replace fixtures in same positions)
-
-## Design Plan
-
-**Budget-Conscious Approach:**
-- If budget_constraint exists: Prioritize changes that give max impact for the money
-- Separate "must-haves" vs "nice-to-haves"
-
-**Design Specifications (surface finish changes ONLY - no layout changes):**
-- **Layout**: PRESERVE EXACTLY AS-IS (reference Visual Assessor's layout documentation)
-- **Cabinet Color**: [exact paint color with code - applied to EXISTING cabinets]
-- **Wall Color**: [exact paint color with code]
-- **Countertops**: [material and color - applied to EXISTING counter layout]
-- **Flooring**: [type, color - same floor area]
-- **Backsplash**: [material, pattern - same wall areas]
-- **Hardware**: [handles, pulls - replace on existing cabinets]
-- **Lighting**: [fixture upgrades in same positions, add under-cabinet if applicable]
-- **Appliances**: [keep existing OR replace with similar size in SAME locations]
-- **Key Features**: [decorative elements only]
-
-**Style Consistency:**
-If inspiration photo provided: Match that aesthetic precisely using ONLY surface finish changes
-If no inspiration: Use style_preferences from state
-
-Use calculate_timeline tool with renovation_scope.
-
-**IMPORTANT: At the end, provide a structured summary:**
-
-```
-DESIGN COMPLETE
-
-Renovation Scope: [cosmetic/moderate - NO structural changes]
-Layout: PRESERVED EXACTLY (no changes to cabinet positions, appliance locations, or room structure)
-
-Surface Finish Changes:
-- Cabinets: [color change only]
-- Walls: [paint color]
-- Countertops: [material/color]
-- Flooring: [type/color]
-- Backsplash: [material/pattern]
-- Hardware: [style/finish]
-- Lighting: [upgrades]
-
-Materials Summary:
-[Detailed list with product names and color codes]
-```
-
-Be SPECIFIC with product names, colors, dimensions. The rendering must show the EXACT same layout with only the surface finishes changed.
-""",
-    tools=[calculate_timeline],
-)
-
-
-project_coordinator = LlmAgent(
-    name="ProjectCoordinator",
-    model="gemini-3-flash-preview",
-    description="Coordinates renovation timeline, budget, execution plan, and generates photorealistic renderings",
-    instruction="""
-Read conversation history to extract:
-- Image detection info from Visual Assessor (current room photo? inspiration photo? filenames?)
-- Design specifications from Design Planner
-- Budget constraints mentioned
-
-Create CLEAN, SCANNABLE final plan.
-
-## Renovation Plan
-
-**Budget Breakdown**:
-- Materials: $[amount]
-- Labor: $[amount]
-- Permits/fees: $[amount]
-- Contingency (10%): $[amount]
-- **Total**: $[amount]
-[If budget_constraint exists: Show "Within your $X budget ✓" or suggest phasing]
-
-**Timeline**: [X weeks, broken into phases]
-**Contractors Needed**: [specific trades]
-
-## Design Summary
-[Pull key points from design_plan - tight, scannable bullets]
-
-## Action Checklist
-1. [immediate first steps]
-2. [subsequent actions]
-
-## 🎨 Visual Rendering: Your Renovated Space
-
-**🎨 Generate Visual Rendering:**
-
-Use **generate_renovation_rendering** tool to CREATE a photorealistic rendering:
-
-Build an ULTRA-DETAILED prompt using the **SLC Formula** (Subject, Lighting, Camera):
-
-**From Visual Assessor & Design Planner, extract:**
-- Room type, current layout details, desired style
-- Exact colors with codes/names, specific materials, finishes
-- Layout preservation requirements, lighting fixtures, all key features
-
-**Prompt Structure using SLC Formula:**
-
-"[CAMERA SPECS FIRST] Shot on professional DSLR, 8K resolution, HDR, ultra high definition, architectural photography, wide-angle lens from [specific angle matching original photo], sharp focus throughout, professional interior design photography quality.
-
-[SUBJECT - ULTRA DETAILED] A renovated [room_type] featuring [exact style, e.g., 'modern farmhouse' or 'contemporary minimalist']. 
-
-**CRITICAL - PRESERVE EXACT LAYOUT**: Maintain the EXACT same layout as original:
-- [List specific window positions, e.g., 'large window on left wall above sink']
-- [Door locations, e.g., 'doorway on right side']
-- [Cabinet configuration, e.g., 'L-shaped upper and lower cabinets along back and left walls']
-- [Appliance positions, e.g., 'stove centered on back wall, refrigerator on right']
-- [Sink location, counter layout, special features like skylights]
-- Same room dimensions and camera angle as original
-
-**Surface Finish Details (ONLY changes - be VERY specific with textures):**
-- Cabinets: [e.g., 'smooth matte Benjamin Moore Simply White OC-117 shaker-style cabinets with subtle panel details']
-- Countertops: [e.g., 'honed Carrara marble with delicate grey veining and soft matte finish']
-- Flooring: [e.g., 'wide-plank white oak with natural grain variation and satin finish']
-- Backsplash: [e.g., 'classic white subway tile in herringbone pattern with light grey grout']
-- Hardware: [e.g., 'brushed nickel cabinet pulls and handles with modern cylindrical design']
-- Walls: [specific paint color]
-- Lighting: [e.g., 'modern pendant lights with clear glass shades, warm LED under-cabinet lighting']
-- Appliances: [e.g., 'stainless steel appliances in SAME positions']
-- Decorative elements: [e.g., 'fresh flowers in white vase, wooden cutting board']
-
-[LIGHTING - CREATE ATMOSPHERE] Soft morning sunlight streaming through windows creating gentle shadows, warm LED under-cabinet lighting adding ambient glow, natural diffused light highlighting the [material] countertops, subtle shadows adding depth and dimension, highlights on polished surfaces, clean and inviting atmosphere with even illumination.
-
-Style: Photorealistic, magazine quality, architectural digest aesthetic, modern luxury feel."
-
-**Key Requirements:**
-- Start with camera/technical specs (8K, HDR, professional DSLR)
-- Use rich, descriptive adjectives for materials (smooth, honed, brushed, wide-plank, etc.)
-- Specify exact lighting conditions (soft morning light, warm LED, diffused natural light)
-- Include texture details (grain, veining, panel details, finish type)
-- Mention atmosphere (clean, inviting, modern luxury)
-- Emphasize layout preservation
-- Use professional photography terms
-
-Parameters:
-- prompt: [your ultra-detailed SLC-formatted prompt above]
+## 4. Generate a rendering
+Call generate_renovation_rendering with:
+- prompt: a detailed description of the renovated room — preserved layout (windows, doors, cabinets, appliances, camera angle) plus the exact surface finishes (colors, materials, textures). Do not wrap it in camera/SLC photography jargon; the tool rewrites the prompt for photorealism.
 - aspect_ratio: "16:9"
-- asset_name: "[room_type]_[style_keyword]_renovation" (e.g., "kitchen_modern_farmhouse_renovation")
+- asset_name: a slug like "kitchen_modern_farmhouse_renovation"
 
-**After generating:**
-Briefly describe (2-3 sentences) key features visible in the rendering and how it addresses their needs.
+After generating, briefly (2-3 sentences) describe what the rendering shows.
 
-**IMPORTANT - DO NOT use markdown image syntax!**
-- Do NOT output `![image](filename.png)` or similar markdown image links
-- Do NOT try to display the image inline with markdown
-- Simply mention that the rendering has been generated and saved as an artifact
-- The user can view the artifact through the artifacts panel
-
-**Note**: The enhanced SLC formula (Subject, Lighting, Camera) creates professional-grade photorealistic renderings.
+Do NOT output markdown image syntax like `![image](filename.png)`. Mention that the artifact is available in the artifacts panel.
 """,
-    tools=[generate_renovation_rendering],
-)
-
-
-# Create the planning pipeline (runs only when coordinator routes planning requests here)
-planning_pipeline = SequentialAgent(
-    name="PlanningPipeline",
-    description="Full renovation planning pipeline: Visual Assessment → Design Planning → Project Coordination",
-    sub_agents=[
-        visual_assessor,
-        design_planner,
-        project_coordinator,
+    tools=[
+        AgentTool(search_agent),
+        estimate_renovation_cost,
+        calculate_timeline,
+        generate_renovation_rendering,
     ],
 )
 
@@ -482,7 +261,7 @@ planning_pipeline = SequentialAgent(
 root_agent = LlmAgent(
     name="HomeRenovationPlanner",
     model="gemini-3-flash-preview",
-    description="Intelligent coordinator that routes renovation requests to the appropriate specialist or planning pipeline. Supports image analysis!",
+    description="Intelligent coordinator that routes renovation requests to the appropriate specialist. Supports image analysis!",
     instruction="""
 You are the Coordinator for the AI Home Renovation Planner.
 
@@ -501,7 +280,7 @@ ROUTING LOGIC:
    → Check: Was a rendering generated earlier?
 
 3. **For NEW renovation planning**:
-   → transfer_to_agent to "PlanningPipeline"
+   → transfer_to_agent to "RenovationPlanner"
    → Examples: "Plan my kitchen", "Here's my space [photos]", "Help renovate"
    → First-time planning or new project
    → ALWAYS route here if images uploaded!
@@ -510,7 +289,7 @@ CRITICAL: You MUST use transfer_to_agent - don't answer directly!
 
 Decision flow:
 - Rendering exists + wants changes → RenderingEditor
-- New project/images → PlanningPipeline
+- New project/images → RenovationPlanner
 - Just chatting → InfoAgent
 
 Be a smart router - match intent!
@@ -518,7 +297,7 @@ Be a smart router - match intent!
     sub_agents=[
         info_agent,
         rendering_editor,
-        planning_pipeline,
+        renovation_planner,
     ],
 )
 

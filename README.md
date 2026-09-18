@@ -11,27 +11,23 @@ A multi-agent system built with Google ADK that analyzes photos of your space, c
 - **🎨 Photorealistic Rendering**: Generates professional-quality images of your renovated space using Gemini 3 Pro
 - **💰 Budget-Aware Planning**: Tailors recommendations to your budget constraints
 - **📊 Complete Roadmap**: Provides timeline, budget breakdown, contractor list, and action checklist
-- **🤖 Multi-Agent Orchestration**: Demonstrates Coordinator/Dispatcher + Sequential Pipeline patterns
+- **🤖 Multi-Agent Orchestration**: Coordinator/Dispatcher routing to an info agent, a renovation planner, and a rendering editor
 - **✏️ Iterative Refinement**: Edit generated renderings based on feedback
 
 ## How It Works
 
-The system uses a **Coordinator/Dispatcher pattern** with three specialized agents:
+The system uses a **Coordinator/Dispatcher pattern**:
 
-1. **Visual Assessor** 📸
-   - Analyzes uploaded room photos (layout, condition, dimensions)
-   - Extracts style from inspiration images
-   - Estimates costs and identifies improvement opportunities
+1. **Renovation Planner** 📸
+   - Analyzes uploaded room photos and inspiration images
+   - Specifies surface-finish-only design (layout preserved)
+   - Estimates budget/timeline and generates a photorealistic rendering
 
-2. **Design Planner** 🎨
-   - Creates budget-appropriate design plans
-   - Specifies exact materials, colors, and fixtures
-   - Prioritizes high-impact changes
+2. **Rendering Editor** ✏️
+   - Refines an existing rendering from feedback
 
-3. **Project Coordinator** 🏗️
-   - Generates comprehensive renovation roadmap
-   - Creates photorealistic rendering of renovated space
-   - Provides budget breakdown, timeline, and action steps
+3. **Info Agent** 💬
+   - Handles greetings and general questions
 
 ## Quick Start
 
@@ -112,20 +108,14 @@ Want modern farmhouse style with white shaker cabinets. Budget: $30k"
 
 ## Multi-Agent Pattern
 
-Demonstrates **Coordinator/Dispatcher + Sequential Pipeline**:
+Demonstrates **Coordinator/Dispatcher**:
 
 ```
 Coordinator (Root Agent)
     ├── Info Agent (quick Q&A)
-    └── Planning Pipeline (Sequential)
-          ├── Visual Assessor (image analysis)
-          ├── Design Planner (specifications)
-          └── Project Coordinator (rendering + roadmap)
+    ├── Renovation Planner (assess + design + render)
+    └── Rendering Editor (iterative image edits)
 ```
 
-**Why this pattern?**
-- Efficient: Only runs workflows that are needed
-- Modular: Each agent has clear responsibilities
-- Scalable: Easy to add new features
-- Production-ready: Real-world agentic system pattern
+Planning is one LlmAgent (assess + design + render), not a SequentialAgent. SLC photorealism rewrite lives only in `generate_renovation_rendering`.
 
