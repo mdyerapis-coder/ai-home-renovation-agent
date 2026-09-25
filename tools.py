@@ -62,21 +62,6 @@ def get_asset_versions_info(tool_context: ToolContext) -> str:
     return "\n".join(info_lines)
 
 
-def get_reference_images_info(tool_context: ToolContext) -> str:
-    """Get information about all reference images (current room/inspiration) uploaded in the session."""
-    reference_images = tool_context.state.get("reference_images", {})
-    if not reference_images:
-        return "No reference images have been uploaded yet."
-    
-    info_lines = ["Available reference images (current room photos & inspiration):"]
-    for filename, info in reference_images.items():
-        version = info.get("version", "Unknown")
-        image_type = info.get("type", "reference")
-        info_lines.append(f"  • {filename} ({image_type} v{version})")
-    
-    return "\n".join(info_lines)
-
-
 async def load_reference_image(tool_context: ToolContext, filename: str):
     """Load a reference image artifact by filename."""
     try:
@@ -92,11 +77,6 @@ async def load_reference_image(tool_context: ToolContext, filename: str):
         return None
 
 
-def get_latest_reference_image_filename(tool_context: ToolContext) -> str:
-    """Get the filename of the most recently uploaded reference image."""
-    return tool_context.state.get("latest_reference_image")
-
-
 # ============================================================================
 # Pydantic Input Models
 # ============================================================================
@@ -106,14 +86,14 @@ class GenerateRenovationRenderingInput(BaseModel):
     aspect_ratio: str = Field(default="16:9", description="The desired aspect ratio, e.g., '1:1', '16:9', '9:16'. Default is 16:9 for room photos.")
     asset_name: str = Field(default="renovation_rendering", description="Base name for the rendering (will be versioned automatically). Use descriptive names like 'kitchen_modern_farmhouse' or 'bathroom_spa'.")
     current_room_photo: str = Field(default=None, description="Optional: filename of the current room photo to use as reference for layout/structure.")
-    inspiration_image: str = Field(default=None, description="Optional: filename of an inspiration image to guide the style. Use 'latest' for most recent upload.")
+    inspiration_image: str = Field(default=None, description="Optional: filename of an inspiration image to guide the style.")
 
 
 class EditRenovationRenderingInput(BaseModel):
     artifact_filename: str = Field(default=None, description="The filename of the rendering artifact to edit. If not provided, uses the last generated rendering.")
     prompt: str = Field(..., description="The prompt describing the desired changes (e.g., 'make cabinets darker', 'add pendant lights', 'change floor to hardwood').")
     asset_name: str = Field(default=None, description="Optional: specify asset name for the new version (defaults to incrementing current asset).")
-    reference_image_filename: str = Field(default=None, description="Optional: filename of a reference image to guide the edit. Use 'latest' for most recent upload.")
+    reference_image_filename: str = Field(default=None, description="Optional: filename of a reference image to guide the edit.")
 
 
 # ============================================================================
@@ -149,16 +129,10 @@ async def generate_renovation_rendering(tool_context: ToolContext, inputs: Gener
                 logger.info(f"Using current room photo: {inputs.current_room_photo}")
         
         if inputs.inspiration_image:
-            if inputs.inspiration_image == "latest":
-                insp_filename = get_latest_reference_image_filename(tool_context)
-            else:
-                insp_filename = inputs.inspiration_image
-            
-            if insp_filename:
-                inspiration_part = await load_reference_image(tool_context, insp_filename)
-                if inspiration_part:
-                    reference_images.append(inspiration_part)
-                    logger.info(f"Using inspiration image: {insp_filename}")
+            inspiration_part = await load_reference_image(tool_context, inputs.inspiration_image)
+            if inspiration_part:
+                reference_images.append(inspiration_part)
+                logger.info(f"Using inspiration image: {inputs.inspiration_image}")
         
         # Build the enhanced prompt using SLC formula (Subject, Lighting, Camera)
         base_rewrite_prompt = f"""
@@ -383,15 +357,9 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
         # Handle reference image if specified
         reference_image_part = None
         if inputs.reference_image_filename:
-            if inputs.reference_image_filename == "latest":
-                ref_filename = get_latest_reference_image_filename(tool_context)
-            else:
-                ref_filename = inputs.reference_image_filename
-            
-            if ref_filename:
-                reference_image_part = await load_reference_image(tool_context, ref_filename)
-                if reference_image_part:
-                    logger.info(f"Using reference image for editing: {ref_filename}")
+            reference_image_part = await load_reference_image(tool_context, inputs.reference_image_filename)
+            if reference_image_part:
+                logger.info(f"Using reference image for editing: {inputs.reference_image_filename}")
 
         model = "gemini-3-pro-image-preview"
 
@@ -492,64 +460,4 @@ async def edit_renovation_rendering(tool_context: ToolContext, inputs: EditRenov
 async def list_renovation_renderings(tool_context: ToolContext) -> str:
     """Lists all renovation renderings created in this session."""
     return get_asset_versions_info(tool_context)
-
-
-async def list_reference_images(tool_context: ToolContext) -> str:
-    """Lists all reference images (current room photos & inspiration) uploaded in this session."""
-    return get_reference_images_info(tool_context)
-
-
-async def save_uploaded_image_as_artifact(
-    tool_context: ToolContext,
-    image_data: str,
-    artifact_name: str,
-    image_type: str = "current_room"
-) -> str:
-    """
-    Saves an uploaded image as a named artifact for later use in editing.
-    
-    This tool is used when the Visual Assessor detects an uploaded image
-    and wants to make it available for the Project Coordinator to edit.
-    
-    Args:
-        tool_context: The tool context
-        image_data: Base64 encoded image data or image bytes
-        artifact_name: Name to save the artifact as (e.g., "current_room_1", "inspiration_1")
-        image_type: Type of image ("current_room" or "inspiration")
-    
-    Returns:
-        Success message with the artifact filename
-    """
-    try:
-        # Create a Part from the image data
-        # Note: This assumes image_data is already in the right format
-        # In practice, we'll get this from the message content
-        
-        # Save as artifact
-        await tool_context.save_artifact(
-            filename=artifact_name,
-            artifact=image_data
-        )
-        
-        # Track in state
-        if "uploaded_images" not in tool_context.state:
-            tool_context.state["uploaded_images"] = {}
-        
-        tool_context.state["uploaded_images"][artifact_name] = {
-            "type": image_type,
-            "filename": artifact_name
-        }
-        
-        if image_type == "current_room":
-            tool_context.state["current_room_artifact"] = artifact_name
-        elif image_type == "inspiration":
-            tool_context.state["inspiration_artifact"] = artifact_name
-        
-        logger.info(f"Saved uploaded image as artifact: {artifact_name}")
-        
-        return f"✅ Image saved as artifact: {artifact_name} (type: {image_type}). This can now be used for editing."
-        
-    except Exception as e:
-        logger.error(f"Error saving uploaded image: {e}")
-        return f"❌ Error saving uploaded image: {e}"
 
