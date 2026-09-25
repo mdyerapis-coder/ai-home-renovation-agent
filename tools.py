@@ -134,7 +134,8 @@ async def generate_renovation_rendering(tool_context: ToolContext, inputs: Gener
                 reference_images.append(inspiration_part)
                 logger.info(f"Using inspiration image: {inputs.inspiration_image}")
         
-        # Build the enhanced prompt using SLC formula (Subject, Lighting, Camera)
+        # Sole SLC rewrite (Subject, Lighting, Camera). Callers pass a content
+        # description of the renovated space; do not also SLC-format in the agent.
         base_rewrite_prompt = f"""
         Create an ultra-detailed, photorealistic prompt for generating a professional interior design photograph.
         
